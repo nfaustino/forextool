@@ -1,0 +1,157 @@
+---
+title: "Remittance Prices Analyser"
+author: "by Nuno Faustino"
+date: "2017 4Q"
+output: html_document
+runtime: shiny
+---
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+
+
+require(ggplot2)
+require(sqldf)
+require(forecast)
+ 
+
+# require(readxl)
+# 
+# setwd("C:/Users/faustnun/Desktop/Projects/_Shiny/WorldBank")
+# 
+# data_temp1 <- suppressWarnings(read_excel ("rpw_dataset_2011_2017_q4.xlsx",sheet="Dataset (up to Q1 2016)"))
+# 
+# data_temp2 <- suppressWarnings(read_excel ("rpw_dataset_2011_2017_q4.xlsx",sheet="Dataset (from Q2 2016)"))
+# 
+# 
+# colnames(data_temp1) = gsub("%","perc",gsub("-","_",gsub(" ", "_", colnames(data_temp1))))
+# colnames(data_temp2) = gsub("%","perc",gsub("-","_",gsub(" ", "_", colnames(data_temp2))))
+# 
+# #sort(colnames(data_temp1))
+# #sort(colnames(data_temp2))
+# 
+# data_temp2$product <- NA
+# data_temp1$access_point <- data_temp1$sending_location
+# data_temp1$sending_location <-NULL
+# data_temp1$receiving_network_coverage <- data_temp1$coverage
+# data_temp1$coverage <- NULL
+# data_temp1$payment_instrument <- NA
+# #data_temp1$sending_network_coverage <- NA
+# #data_temp1$receiving_method <- data_temp1$pick_up_method # not mentioned in notes - needs more work
+# data_temp2$pick_up_method <- data_temp2$pickup_method
+# data_temp2$pickup_method <- NULL
+# #data_temp1$cash_pickup_location <- NA # not mentioned in notes - needs more work
+# names(data_temp2)[names(data_temp2) == 'Standard_Note'] <- 'note1'
+# 
+# #union of data sets
+# data <- rbind(data_temp1,data_temp2)
+# 
+# rm(data_temp1,data_temp2)
+# 
+# #other data cleaning
+# data$cc1_denomination_amount <- 200
+# data$cc2_denomination_amount <- 500
+# data$firm[data$firm=="azimo"] <- 'Azimo'
+# data$firm[data$firm=="Trans Fast"] <- 'Trans-Fast'
+# 
+# data$period_date <- data$period
+# data$period_date <- gsub("_1Q", "-01", data$period_date)       # map first quarter to January
+# data$period_date <- gsub("_2Q", "-04", data$period_date)       # map second quarter to April
+# data$period_date <- gsub("_3Q", "-07", data$period_date)       # map third quarter to July
+# data$period_date <- gsub("_4Q", "-10", data$period_date)       # map fourth quarter October
+# 
+# data$period_date <- paste(data$period_date, "-01", sep="")    # add first day of the month
+# 
+# data$period_date <- as.Date(data$period_date, "%Y-%m-%d")     # convert to date
+# 
+# summary(data$cc1_total_cost_perc[data$cc1_total_cost_perc>=0])
+# 
+# saveRDS(data,"FOREXTool.rds")
+
+data <- readRDS("FOREXTool.rds")
+
+renderUI (
+  selectInput("source_breaks", label = "Source Country:",
+              choices = c(unique(data$source_name),"All") , selected = "All" ) 
+)
+
+sourceactive <- reactive({ if (input$source_breaks=="All") {c(unique(data$destination_name),"All")}  else { c(unique(data[data$source_name==input$source_breaks,]$destination_name),"All")} })
+  
+renderUI (
+  selectInput("dest_breaks", label = "Destination Country:",
+           choices = sourceactive(), selected = "All") 
+
+)
+#data[data$source_name==input$source_breaks&data$destination_name==input$dest_breaks,]
+ filter <- reactive ({if (input$source_breaks!="All"&input$dest_breaks!="All") {data[data$source_name==input$source_breaks&data$destination_name==input$dest_breaks,]}
+   else if ((input$source_breaks=="All"&input$dest_breaks!="All")){data[data$destination_name==input$dest_breaks,]} 
+   else if (input$dest_breaks=="All"&input$source_breaks!="All") {data[data$source_name==input$source_breaks,]} 
+   else {data}})
+
+ 
+renderPlot({
+ggplot(filter(), aes(x = period_date)) +
+  stat_summary(aes(y = cc1_total_cost_perc,group=1,colour="200 USD"), fun.y=mean, geom="line", group = 1,show.legend = TRUE) +
+  stat_summary(aes(y = cc2_total_cost_perc,group=1,colour="500 USD"), fun.y=mean, geom="line", group = 1,show.legend = TRUE) + 
+  scale_colour_manual(values=c("200 USD"="blue","500 USD"="red")) +
+  labs(colour="") + 
+  ggtitle("Evolution of total cost (percent)") + ylab("Average Profit Margin for Companies (%)") + xlab("Time period")
+})
+
+
+
+periodactive <- reactive({ if (input$source_breaks=="All") {unique(data$period)}  else { unique(data[data$source_name==input$source_breaks,]$period)} })
+
+renderUI (
+  selectInput("period1", label = "Period 1:",
+           choices = periodactive()) ) 
+
+renderUI ( 
+  selectInput("period2", label = "Period 2",
+           choices = periodactive(), periodactive()[length(periodactive())]) )
+
+renderUI (
+  selectInput("amount", label = "Amount:",
+           choices = list("200"="cc1","500"="cc2")) ) 
+
+#reactive ({input$amount})    
+
+
+preag <- reactive({sqldf(paste0("SELEcT 
+                 period
+                 , count(*) as Transfers
+                 , count(distinct [firm]) as [Number of Firms]
+                 , sum([",input$amount,"_total_cost_perc])/count(*) as [Average Profit Margin for Companies (%)]
+                 , Case When count( distinct corridor) = 1 Then sum(([",input$amount,"_lcu_amount]-[",input$amount,"_lcu_fee])*[",input$amount,"_lcu_fx_rate])/count(*) Else NULL END as [Average Money in Destination Currency*]
+                 , sum([",input$amount,"_fx_margin]/[",input$amount,"_total_cost_perc])/count(*) *100 as [Average FX Weight in Profit Margin (%)]
+                 , Case When count( distinct corridor) = 1 Then sum([inter_lcu_bank_fx]-[",input$amount,"_lcu_fx_rate])/count(*) *100 Else NULL End as [Average Difference to INDEX (bps)*]
+                FROM data 
+                 WHERE (",if(input$source_breaks=="All"){"1=1"}else{"1=0"}," OR source_name='",input$source_breaks,"') AND (",if(input$dest_breaks=="All"){"1=1"}else{"1=0"}," OR destination_name='",input$dest_breaks,"') AND period in ('",input$period1,"','",input$period2,"')
+                 GROUP BY period
+                 ORDER by 1 asc "))  })
+
+
+tableag <- reactive({  df <- data.frame(t(preag()),stringsAsFactors = FALSE)  
+            colnames(df) <- as.character(unlist(df[1,])) 
+            df <- df[-1, ]
+            
+            df[,1] <- round(as.numeric(df[,1]),digits=2)
+            df[,2] <- round(as.numeric(df[,2]),digits=2)
+            df$'Diff (%)' <- round((df[,2] /df[,1] - 1 ) * 100,digits = 2)
+            df
+})
+
+renderTable(tableag(),rownames = TRUE)
+
+
+```
+
+* Metric only available by single corridor
+Source: [World Bank Remitance Prices Report](https://remittanceprices.worldbank.org/en  "Click to visit their website")
+
+You can analyse any corridor or check aggregated averages across periods or countries with this tool. Differences between periods are also shown.
+
+This data is presented with little transformation from the original. The data merging and cleaning is demonstrated here https://cloudaeon.shinyapps.io/Forex/ .
+
+There are still lot of things to do. If you spotted a "bug"" or want to leave suggestions,  [contact me](mailto:nuno.faustino@gmail.com "nuno.faustino@gmail.com").
+
+This an alpha version. Please check back for updates...
